@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Photo Fade + Arrow Gallery — исправленная версия</title>
+  <style>
+    :root{--bg:#111;--card-radius:8px}
+    html,body{height:100%;margin:0}
+    body{
+      display:flex;align-items:center;justify-content:center;
+      background:var(--bg);cursor:pointer;font-family:system-ui,Segoe UI,Roboto,Arial
+    }
+
+    .container{
+      position:relative;
+      width:794px; /* A4 @96dpi */
+      height:1123px; /* A4 @96dpi */
+      user-select:none;
+    }
+
+    .frame-img{
+      position:absolute;top:0;left:0;
+      width:80%;height:90%;object-fit:cover;border-radius:var(--card-radius);display:block
+    }
+
+    /* плавный fade только для верхнего фото */
+    #photo1{z-index:3;top:54px;left:65px;opacity:1;transition:opacity 1.6s ease}
+    #gallery{z-index:2;top:0;left:65px;opacity:1}
+
+    .arrow{
+      position:absolute;top:50%;transform:translateY(-50%);
+      background:rgba(0,0,0,0.45);backdrop-filter:blur(4px);
+      border-radius:999px;width:56px;height:56px;display:flex;align-items:center;justify-content:center;
+      cursor:pointer;user-select:none;opacity:0;pointer-events:none;transition:opacity .35s ease,transform .18s ease;
+      z-index:5;border:0;color:#fff;font-size:22px;
+    }
+    .arrow.visible{opacity:1;pointer-events:auto}
+    .arrow:active{transform:translateY(-50%) scale(.95)}
+    .arrow-left{left:20px}
+    .arrow-right{right:20px}
+    .arrow.disabled{opacity:.32;pointer-events:none}
+
+    .indicator{
+      position:absolute;left:50%;bottom:36px;transform:translateX(-50%);z-index:5;
+      color:#fff;font-size:13px;padding:6px 10px;border-radius:999px;background:rgba(0,0,0,0.35);backdrop-filter:blur(4px);
+      opacity:0;pointer-events:none;transition:opacity .35s ease
+    }
+    .indicator.visible{opacity:1;pointer-events:auto}
+
+    .no-pointer img{pointer-events:none}
+
+    @media (max-width:900px){.container{width:90vw;height:126vw}}
+  </style>
+</head>
+<body>
+  <div class="container" id="container">
+    <img id="photo1" class="frame-img" src="https://raw.githubusercontent.com/sima888888/manga1/main/1756109584736.png" alt="First Photo">
+    <img id="gallery" class="frame-img" src="" alt="Gallery Photo">
+    <button id="prevBtn" class="arrow arrow-left" aria-label="Назад">◀</button>
+    <button id="nextBtn" class="arrow arrow-right" aria-label="Вперёд">▶</button>
+    <div id="indicator" class="indicator">— / —</div>
+  </div>
+
+  <script>
+    // ваши URL'ы (первый — начальный после исчезновения photo1)
+    const imageSources = [
+      'https://raw.githubusercontent.com/sima888888/manga1/main/Маска.jpeg',
+      'https://raw.githubusercontent.com/sima888888/manga1/main/manga1.png',
+      'https://raw.githubusercontent.com/sima888888/manga1/main/manga45.png',
+      'https://raw.githubusercontent.com/sima888888/manga1/main/manga2.png',
+      'https://raw.githubusercontent.com/sima888888/manga1/main/manga3.png',
+      'https://raw.githubusercontent.com/sima888888/manga1/main/manga4.png',
+      'https://raw.githubusercontent.com/sima888888/manga1/main/manga5.png',
+      'https://raw.githubusercontent.com/sima888888/manga1/main/manga6.png',
+      'https://raw.githubusercontent.com/sima888888/manga1/main/manga7.png',
+      'https://raw.githubusercontent.com/sima888888/manga1/main/manga8.png'
+    ];
+
+    const photo1 = document.getElementById('photo1');
+    const gallery = document.getElementById('gallery');
+    const prevBtn = document.getElementById('prevBtn');
+    const nextBtn = document.getElementById('nextBtn');
+    const indicator = document.getElementById('indicator');
+    const container = document.getElementById('container');
+
+    let started = false;
+    let currentIndex = 0;
+
+    // множество битых индексов (если загрузка не прошла)
+    const broken = new Set();
+
+    // Найти следующий/предыдущий валидный индекс (не в broken). dir = 1 или -1
+    function findNextValid(startIndex, dir = 1) {
+      const n = imageSources.length;
+      let i = startIndex;
+      for (let step = 0; step < n; step++) {
+        i = (i + dir + n) % n;
+        if (!broken.has(i)) return i;
+      }
+      return null;
+    }
+
+    // Поддерживаем корректный текст индикатора
+    function updateIndicator() {
+      if (currentIndex < 0) indicator.textContent = `— / ${imageSources.length}`;
+      else indicator.textContent = `${currentIndex + 1} / ${imageSources.length}`;
+    }
+
+    // Включаем/выключаем стрелки в зависимости от наличия доступных картинок
+    function updateControlsDisabled() {
+      const prevValid = findNextValid(currentIndex, -1);
+      const nextValid = findNextValid(currentIndex, 1);
+
+      if (prevValid === null || prevValid === currentIndex) prevBtn.classList.add('disabled'); else prevBtn.classList.remove('disabled');
+      if (nextValid === null || nextValid === currentIndex) nextBtn.classList.add('disabled'); else nextBtn.classList.remove('disabled');
+    }
+
+    // Безопасно установить src (с encodeURI) и без анимации — мгновенно.
+    function setGallerySrc(src) {
+      // encodeURI для корретной подстановки кириллицы в URLs
+      gallery.src = encodeURI(src);
+    }
+
+    // Попытка загрузить изображение перед показом. Если не удалось — помечаем как broken и ищем следующее.
+    function loadImageAt(index) {
+      if (index == null) return;
+      if (index < 0 || index >= imageSources.length) return;
+
+      // если индекс уже помечен битым — сразу ищем следующий
+      if (broken.has(index)) {
+        const next = findNextValid(index, 1);
+        if (next !== null && next !== index) return loadImageAt(next);
+        // ничего доступного
+        currentIndex = -1;
+        setGallerySrc(''); // пусто
+        updateIndicator();
+        updateControlsDisabled();
+        return;
+      }
+
+      const src = imageSources[index];
+      const tester = new Image();
+
+      tester.onload = () => {
+        setGallerySrc(src);
+        currentIndex = index;
+        updateIndicator();
+        updateControlsDisabled();
+        console.log('Loaded image', index, src);
+      };
+
+      tester.onerror = () => {
+        console.warn('Failed to load image', index, src);
+        broken.add(index);
+        // пробуем следующий
+        const next = findNextValid(index, 1);
+        if (next !== null && next !== index) loadImageAt(next);
+        else {
+          const prev = findNextValid(index, -1);
+          if (prev !== null) loadImageAt(prev);
+          else {
+            // нет ни одной рабочей
+            console.error('Нет доступных изображений для показа');
+            currentIndex = -1;
+            setGallerySrc('');
+            updateIndicator();
+            updateControlsDisabled();
+          }
+        }
+      };
+
+      // запуск загрузки (используем encodeURI, чтобы корректно работала кириллица)
+      tester.src = encodeURI(src);
+    }
+
+    // Показать контролы после первого клика (fade верхнего фото)
+    function revealControls() {
+      prevBtn.classList.add('visible');
+      nextBtn.classList.add('visible');
+      indicator.classList.add('visible');
+      container.classList.add('no-pointer'); // останавливает клики по картинкам
+      updateControlsDisabled();
+    }
+
+    // Первый клик — плавно скрываем верхнее фото, затем показываем контролы и загружаем стартовое изображение
+    function onFirstClick(e) {
+      if (started) return;
+      // Если клик был по кнопке (возможно случайно), не считать его первым кликом
+      // но до появления кнопок они не кликабельны, так что это защитная проверка
+      if (e.target === prevBtn || e.target === nextBtn) return;
+
+      started = true;
+      photo1.style.opacity = '0';
+
+      function onTransitionEnd(evt) {
+        if (evt.propertyName !== 'opacity') return;
+        photo1.removeEventListener('transitionend', onTransitionEnd);
+        revealControls();
+        loadImageAt(currentIndex); // загружаем и показываем первый слайд
+      }
+      photo1.addEventListener('transitionend', onTransitionEnd);
+    }
+
+    document.body.addEventListener('click', onFirstClick, { once: false });
+
+    // Кнопки навигации (они используют loadImageAt и пропускают битые)
+    prevBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!started) return;
+      const target = findNextValid(currentIndex, -1);
+      if (target === null || target === currentIndex) return;
+      loadImageAt(target);
+    });
+
+    nextBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!started) return;
+      const target = findNextValid(currentIndex, 1);
+      if (target === null || target === currentIndex) return;
+      loadImageAt(target);
+    });
+
+    // Клавиши
+    window.addEventListener('keydown', (e) => {
+      if (!started) return;
+      if (e.key === 'ArrowLeft') prevBtn.click();
+      if (e.key === 'ArrowRight') nextBtn.click();
+    });
+
+    // Свайпы
+    (function addSwipeSupport() {
+      let touchStartX = null, touchStartY = null;
+      container.addEventListener('touchstart', (e) => {
+        if (!started) return;
+        const t = e.touches[0]; touchStartX = t.clientX; touchStartY = t.clientY;
+      });
+      container.addEventListener('touchend', (e) => {
+        if (!started || touchStartX === null) return;
+        const t = e.changedTouches[0]; const dx = t.clientX - touchStartX; const dy = t.clientY - touchStartY;
+        if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy)) {
+          if (dx > 0) prevBtn.click(); else nextBtn.click();
+        }
+        touchStartX = null; touchStartY = null;
+      });
+    })();
+
+    // Инициализация: пока показываем пустой gallery; после первого клика он загрузится.
+    currentIndex = 0;
+    updateIndicator();
+    updateControlsDisabled();
+  </script>
+</body>
+</html>
